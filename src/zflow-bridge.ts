@@ -51,7 +51,7 @@ import {
   cleanupWorktrees,
   type WorktreeSetup,
 } from "./runs/shared/worktree.ts"
-import type { RunSyncOptions, SingleResult } from "./shared/types.ts"
+import type { AgentProgress, RunSyncOptions, SingleResult } from "./shared/types.ts"
 
 // ── Shared helpers ──────────────────────────────────────────────
 
@@ -60,6 +60,49 @@ function findAgent(agents: AgentConfig[], name: string): AgentConfig | undefined
   return agents.find(
     (a) => a.name === name || a.name === `builtin:${name}`,
   )
+}
+
+type RunSyncUpdate = Parameters<NonNullable<RunSyncOptions["onUpdate"]>>[0]
+
+export interface ZflowAgentProgress {
+  agent: string
+  status?: string
+  toolCount?: number
+  currentTool?: string
+  currentToolArgs?: string
+  recentTools?: Array<{ tool?: string; args?: string }>
+  durationMs?: number
+  lastActivityAt?: number
+  recentOutput?: string[]
+}
+
+function mapProgress(agentName: string, progress: AgentProgress): ZflowAgentProgress {
+  return {
+    agent: agentName,
+    status: progress.status,
+    toolCount: progress.toolCount,
+    currentTool: progress.currentTool,
+    currentToolArgs: progress.currentToolArgs,
+    recentTools: progress.recentTools?.map((tool) => ({
+      tool: tool.tool,
+      args: tool.args,
+    })),
+    durationMs: progress.durationMs,
+    lastActivityAt: progress.lastActivityAt,
+    recentOutput: progress.recentOutput,
+  }
+}
+
+function forwardProgress(
+  agentName: string,
+  onUpdate: ZflowAgentInput["onUpdate"] | undefined,
+): RunSyncOptions["onUpdate"] | undefined {
+  if (!onUpdate) return undefined
+  return (update: RunSyncUpdate) => {
+    const progress = update.details?.progress?.[0]
+    if (!progress) return
+    onUpdate(mapProgress(agentName, progress))
+  }
 }
 
 // ── Own types ───────────────────────────────────────────────────
@@ -80,6 +123,8 @@ export interface ZflowAgentInput {
   outputMode?: "inline" | "file-only"
   /** Output truncation limits. */
   maxOutput?: { lines?: number; bytes?: number }
+  /** Live progress callback. */
+  onUpdate?: (progress: ZflowAgentProgress) => void
 }
 
 /** Result of a single agent dispatch. */
@@ -277,6 +322,7 @@ export function createZflowDispatchService(
         outputPath: input.output === false ? undefined : (typeof input.output === "string" ? input.output : undefined),
         outputMode: input.outputMode === "file-only" ? "file-only" : undefined,
         maxOutput: input.maxOutput,
+        onUpdate: forwardProgress(agent.name, input.onUpdate),
       }
 
       try {
@@ -380,6 +426,7 @@ async function runParallelWithWorktrees(
             : (typeof task.output === "string" ? task.output : undefined),
           outputMode: task.outputMode === "file-only" ? "file-only" : undefined,
           maxOutput: task.maxOutput,
+          onUpdate: forwardProgress(task.agent, task.onUpdate),
         }
 
         const resolvedAgent = findAgent(agents, task.agent)!
@@ -500,6 +547,7 @@ async function runParallelConcurrent(
           : (typeof task.output === "string" ? task.output : undefined),
         outputMode: task.outputMode === "file-only" ? "file-only" : undefined,
         maxOutput: task.maxOutput,
+        onUpdate: forwardProgress(task.agent, task.onUpdate),
       }
 
       const resolvedAgent = findAgent(agents, task.agent)!
