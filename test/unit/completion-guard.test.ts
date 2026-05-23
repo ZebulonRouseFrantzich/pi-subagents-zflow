@@ -105,3 +105,28 @@ test("implementation task with mutation attempts does not trigger", () => {
 
 	assert.equal(result.triggered, false);
 });
+
+// ── Zflow review agents ──────────────────────────────────────────
+
+test("zflow.review-* agents do not expect mutation by default", () => {
+	assert.equal(expectsImplementationMutation("zflow.review-correctness", "Review the implementation and return findings"), false);
+	assert.equal(expectsImplementationMutation("zflow.review-integration", "Review the diff for integration issues"), false);
+	assert.equal(expectsImplementationMutation("zflow.review-security", "Inspect the code for security vulnerabilities"), false);
+	assert.equal(expectsImplementationMutation("zflow.review-logic", "Review the logic and return findings"), false);
+	assert.equal(expectsImplementationMutation("zflow.review-system", "Review system-level concerns"), false);
+});
+
+test("zflow.plan-review-* agents do not expect mutation by default", () => {
+	assert.equal(expectsImplementationMutation("zflow.plan-review-correctness", "Review the plan for correctness"), false);
+	assert.equal(expectsImplementationMutation("zflow.plan-review-integration", "Review the plan for integration issues"), false);
+});
+
+test("zflow review agents expect mutation when task explicitly requires editing", () => {
+	assert.equal(expectsImplementationMutation("zflow.review-correctness", "Review this and fix any real issues; apply the fixes directly"), true);
+	assert.equal(expectsImplementationMutation("zflow.plan-review-correctness", "You must edit the plan to address these issues"), true);
+});
+
+test("zflow review agents still respect review-only and no-edit instructions", () => {
+	assert.equal(expectsImplementationMutation("zflow.review-correctness", "Review only: return findings, do not edit"), false);
+	assert.equal(expectsImplementationMutation("zflow.review-correctness", "Do not edit files. Tell me what you find."), false);
+});
