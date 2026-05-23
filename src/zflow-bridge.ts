@@ -53,6 +53,15 @@ import {
 } from "./runs/shared/worktree.ts"
 import type { RunSyncOptions, SingleResult } from "./shared/types.ts"
 
+// ── Shared helpers ──────────────────────────────────────────────
+
+function findAgent(agents: AgentConfig[], name: string): AgentConfig | undefined {
+  // Try exact match first, then prefix match for builtin: prefix
+  return agents.find(
+    (a) => a.name === name || a.name === `builtin:${name}`,
+  )
+}
+
 // ── Own types ───────────────────────────────────────────────────
 
 /** Input for a single agent dispatch. */
@@ -232,13 +241,6 @@ export function createZflowDispatchService(
         error: `Agent discovery failed: ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-  }
-
-  function findAgent(agents: AgentConfig[], name: string): AgentConfig | undefined {
-    // Try exact match first, then prefix match for builtin: prefix
-    return agents.find(
-      (a) => a.name === name || a.name === `builtin:${name}`,
-    )
   }
 
   return {
