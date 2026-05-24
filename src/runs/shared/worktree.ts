@@ -29,6 +29,16 @@ interface WorktreeDiff {
 	patchPath: string;
 }
 
+/**
+ * Pathspec patterns to exclude from diff/patch capture.
+ * These match generated or runtime state files that should not be committed or
+ * included in implementation patches.
+ */
+const PATCH_EXCLUDE_PATTERNS = [
+	":!.wrangler/**",
+	":!node_modules/**",
+];
+
 interface WorktreeTaskCwdConflict {
 	index: number;
 	agent: string;
@@ -446,9 +456,9 @@ function captureWorktreeDiff(
 ): WorktreeDiff {
 	removeSyntheticPathsBeforeDiff(worktree);
 	runGitChecked(worktree.path, ["add", "-A"]);
-	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit]).trim();
-	const patch = runGitChecked(worktree.path, ["diff", "--cached", setup.baseCommit]);
-	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit]);
+	const diffStat = runGitChecked(worktree.path, ["diff", "--cached", "--stat", setup.baseCommit, "--", ...PATCH_EXCLUDE_PATTERNS]).trim();
+	const patch = runGitChecked(worktree.path, ["diff", "--cached", setup.baseCommit, "--", ...PATCH_EXCLUDE_PATTERNS]);
+	const numstat = runGitChecked(worktree.path, ["diff", "--cached", "--numstat", setup.baseCommit, "--", ...PATCH_EXCLUDE_PATTERNS]);
 	fs.writeFileSync(patchPath, patch, "utf-8");
 
 	if (!patch.trim()) {
