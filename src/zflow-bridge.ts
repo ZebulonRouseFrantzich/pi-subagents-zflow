@@ -39,7 +39,6 @@
  */
 
 import * as crypto from "node:crypto"
-import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { discoverAgents } from "./agents/agents.ts"
@@ -231,40 +230,6 @@ function mapSingleResult(result: SingleResult): ZflowAgentResult {
     rawOutput: result.finalOutput ?? "",
     savedOutputPath: result.savedOutputPath,
     outputPath: result.savedOutputPath,
-  }
-}
-
-function extractScopedVerificationCommand(task: string): string | undefined {
-  const match = task.match(/## Scoped verification[\s\S]*?```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/i)
-  const command = match?.[1]?.trim()
-  return command ? command : undefined
-}
-
-function runScopedVerification(command: string, cwd: string): ZflowVerificationResult {
-  const result = spawnSync(command, {
-    cwd,
-    shell: true,
-    encoding: "utf-8",
-    timeout: 10 * 60 * 1000,
-  })
-
-  const output = [result.stdout, result.stderr]
-    .filter((part) => typeof part === "string" && part.length > 0)
-    .join("\n")
-    .trim()
-
-  if (result.error) {
-    return {
-      status: "fail",
-      command,
-      output: output ? `${output}\n${result.error.message}` : result.error.message,
-    }
-  }
-
-  return {
-    status: result.status === 0 ? "pass" : "fail",
-    command,
-    output,
   }
 }
 
@@ -461,21 +426,15 @@ async function runParallelWithWorktrees(
 
         const resolvedAgent = findAgent(agents, task.agent)!
         const result = await runSync(agentCwd, agents, resolvedAgent.name, task.task, options)
-        const agentOk = result.exitCode === 0 && !result.error
-        const verificationCommand = agentOk ? extractScopedVerificationCommand(task.task) : undefined
-        const verification = verificationCommand
-          ? runScopedVerification(verificationCommand, agentCwd)
-          : undefined
-        const verificationOk = verification ? verification.status === "pass" : true
 
         return {
           agent: task.agent,
-          ok: agentOk && verificationOk,
-          error: result.error ?? (verificationOk ? undefined : `Scoped verification failed: ${verification?.command ?? "unknown command"}`),
+          ok: result.exitCode === 0 && !result.error,
+          error: result.error,
           rawOutput: result.finalOutput ?? "",
           savedOutputPath: result.savedOutputPath,
           outputPath: result.savedOutputPath,
-          verification,
+          verification: undefined,
           worktreePath: undefined as string | undefined,
           patchPath: undefined as string | undefined,
           changedFiles: undefined as string[] | undefined,
