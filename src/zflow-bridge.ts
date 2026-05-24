@@ -193,6 +193,36 @@ function generateRunId(): string {
   return crypto.randomUUID().slice(0, 8)
 }
 
+/**
+ * Run tasks with rolling concurrency.
+ *
+ * Starts up to `limit` tasks immediately.
+ * When any task completes, the next queued task begins.
+ * Results are returned in original task order.
+ */
+async function runTasksWithRollingConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number,
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length)
+  let nextIndex = 0
+
+  async function worker(): Promise<void> {
+    while (nextIndex < tasks.length) {
+      const idx = nextIndex++
+      results[idx] = await tasks[idx]()
+    }
+  }
+
+  const active = Math.min(limit, tasks.length)
+  const workers: Promise<void>[] = []
+  for (let i = 0; i < active; i++) {
+    workers.push(worker())
+  }
+  await Promise.all(workers)
+  return results
+}
+
 function mapSingleResult(result: SingleResult): ZflowAgentResult {
   return {
     ok: result.exitCode === 0 && !result.error,
@@ -465,13 +495,8 @@ async function runParallelWithWorktrees(
 
     const concurrencyLimit = Math.max(1, concurrency)
 
-    // Run with concurrency control
-    const taskResults: ZflowParallelTaskResult[] = []
-    for (let i = 0; i < runQueue.length; i += concurrencyLimit) {
-      const batch = runQueue.slice(i, i + concurrencyLimit)
-      const batchResults = await Promise.all(batch.map((fn) => fn()))
-      taskResults.push(...batchResults)
-    }
+    // Run with rolling concurrency control
+    const taskResults: ZflowParallelTaskResult[] = await runTasksWithRollingConcurrency(runQueue, concurrencyLimit)
 
     // Capture worktree diffs
     const diffsDir = path.join(cwd, ".zflow", "worktree-diffs", runId)
@@ -533,7 +558,6 @@ async function runParallelConcurrent(
     input.tasks.length,
   )
   const concurrencyLimit = Math.max(1, concurrency)
-  const taskResults: ZflowParallelTaskResult[] = []
 
   const runQueue = input.tasks.map((task, _index) => async () => {
     const taskCwd = task.cwd ?? cwd
@@ -571,11 +595,7 @@ async function runParallelConcurrent(
     }
   })
 
-  for (let i = 0; i < runQueue.length; i += concurrencyLimit) {
-    const batch = runQueue.slice(i, i + concurrencyLimit)
-    const batchResults = await Promise.all(batch.map((fn) => fn()))
-    taskResults.push(...batchResults)
-  }
+  const taskResults = await runTasksWithRollingConcurrency(runQueue, concurrencyLimit)
 
   const allOk = taskResults.every((r) => r.ok)
   return { ok: allOk, results: taskResults }
