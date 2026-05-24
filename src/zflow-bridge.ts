@@ -209,7 +209,19 @@ async function runTasksWithRollingConcurrency<T>(
   async function worker(): Promise<void> {
     while (nextIndex < tasks.length) {
       const idx = nextIndex++
-      results[idx] = await tasks[idx]()
+      // If a task factory throws unexpectedly, catch and set the result to a
+      // best-effort failure sentinel so the slot is freed and the pool
+      // continues. Call-site task factories already catch their own errors
+      // and return { ok: false, error }, so this is defence-in-depth.
+      try {
+        results[idx] = await tasks[idx]()
+      } catch (err) {
+        results[idx] = {
+          ok: false,
+          error: `Unexpected worker crash: ${err instanceof Error ? err.message : String(err)}`,
+          rawOutput: "",
+        } as unknown as T
+      }
     }
   }
 
@@ -411,6 +423,15 @@ async function runParallelWithWorktrees(
       const agentCwd = worktree.agentCwd
       const taskRunId = `${runId}-${index}`
 
+      // Emit starting progress before the agent run so the UI transitions
+      // from "queued" to "running" immediately.
+      task.onUpdate?.({
+        agent: task.agent,
+        status: "running",
+        recentOutput: ["starting worktree dispatch..."],
+        lastActivityAt: Date.now(),
+      })
+
       try {
         const options: RunSyncOptions = {
           runId: taskRunId,
@@ -520,6 +541,13 @@ async function runParallelConcurrent(
 
   const runQueue = input.tasks.map((task, _index) => async () => {
     const taskCwd = task.cwd ?? cwd
+    // Emit starting progress so the UI shows "running" immediately.
+    task.onUpdate?.({
+      agent: task.agent,
+      status: "running",
+      recentOutput: ["starting dispatch..."],
+      lastActivityAt: Date.now(),
+    })
     try {
       const options: RunSyncOptions = {
         runId: generateRunId(),
