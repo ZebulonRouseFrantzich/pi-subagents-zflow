@@ -38,6 +38,12 @@ const RESEARCH_AGENT_PATTERNS = [
 	/\bresearch(?:er)?\b/i,
 ];
 
+/** Zflow review agent names: `zflow.review-*` and `zflow.plan-review-*`. */
+const ZFLOW_REVIEW_AGENT_PATTERNS = [
+	/^zflow\.review-/i,
+	/^zflow\.plan-review-/i,
+];
+
 const WORKER_IMPLEMENTATION_PATTERNS = [
 	/\b(?:implement|fix|edit|modify|patch|refactor|delete)\b/i,
 	/\b(?:update|add|remove|replace|create)\b(?!\s+(?:(?:a|an|the)\s+)?(?:report|summary|findings?)(?:\b|$))/i,
@@ -91,6 +97,9 @@ export function expectsImplementationMutation(agent: string, task: string): bool
 
 	if (RESEARCH_AGENT_PATTERNS.some((pattern) => pattern.test(agent))) return false;
 	if (/\breviewer\b/i.test(agent)) return REVIEWER_REQUIRED_EDIT_PATTERNS.some((pattern) => pattern.test(taskText));
+	if (ZFLOW_REVIEW_AGENT_PATTERNS.some((pattern) => pattern.test(agent))) {
+		return REVIEWER_REQUIRED_EDIT_PATTERNS.some((pattern) => pattern.test(taskText));
+	}
 
 	const workerIntent = agent === "worker" && WORKER_IMPLEMENTATION_PATTERNS.some((pattern) => pattern.test(taskText));
 	if (workerIntent) return true;
