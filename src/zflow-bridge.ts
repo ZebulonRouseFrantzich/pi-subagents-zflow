@@ -39,6 +39,7 @@
  */
 
 import * as crypto from "node:crypto"
+import { spawnSync } from "node:child_process"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { discoverAgents } from "./agents/agents.ts"
@@ -192,48 +193,6 @@ function generateRunId(): string {
   return crypto.randomUUID().slice(0, 8)
 }
 
-/**
- * Run tasks with rolling concurrency.
- *
- * Starts up to `limit` tasks immediately.
- * When any task completes, the next queued task begins.
- * Results are returned in original task order.
- */
-async function runTasksWithRollingConcurrency<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number,
-): Promise<T[]> {
-  const results: T[] = new Array(tasks.length)
-  let nextIndex = 0
-
-  async function worker(): Promise<void> {
-    while (nextIndex < tasks.length) {
-      const idx = nextIndex++
-      // If a task factory throws unexpectedly, catch and set the result to a
-      // best-effort failure sentinel so the slot is freed and the pool
-      // continues. Call-site task factories already catch their own errors
-      // and return { ok: false, error }, so this is defence-in-depth.
-      try {
-        results[idx] = await tasks[idx]()
-      } catch (err) {
-        results[idx] = {
-          ok: false,
-          error: `Unexpected worker crash: ${err instanceof Error ? err.message : String(err)}`,
-          rawOutput: "",
-        } as unknown as T
-      }
-    }
-  }
-
-  const active = Math.min(limit, tasks.length)
-  const workers: Promise<void>[] = []
-  for (let i = 0; i < active; i++) {
-    workers.push(worker())
-  }
-  await Promise.all(workers)
-  return results
-}
-
 function mapSingleResult(result: SingleResult): ZflowAgentResult {
   return {
     ok: result.exitCode === 0 && !result.error,
@@ -242,6 +201,40 @@ function mapSingleResult(result: SingleResult): ZflowAgentResult {
     rawOutput: result.finalOutput ?? "",
     savedOutputPath: result.savedOutputPath,
     outputPath: result.savedOutputPath,
+  }
+}
+
+function extractScopedVerificationCommand(task: string): string | undefined {
+  const match = task.match(/## Scoped verification[\s\S]*?```(?:bash|sh|shell)?\s*\n([\s\S]*?)```/i)
+  const command = match?.[1]?.trim()
+  return command ? command : undefined
+}
+
+function runScopedVerification(command: string, cwd: string): ZflowVerificationResult {
+  const result = spawnSync(command, {
+    cwd,
+    shell: true,
+    encoding: "utf-8",
+    timeout: 10 * 60 * 1000,
+  })
+
+  const output = [result.stdout, result.stderr]
+    .filter((part) => typeof part === "string" && part.length > 0)
+    .join("\n")
+    .trim()
+
+  if (result.error) {
+    return {
+      status: "fail",
+      command,
+      output: output ? `${output}\n${result.error.message}` : result.error.message,
+    }
+  }
+
+  return {
+    status: result.status === 0 ? "pass" : "fail",
+    command,
+    output,
   }
 }
 
@@ -423,14 +416,8 @@ async function runParallelWithWorktrees(
       const agentCwd = worktree.agentCwd
       const taskRunId = `${runId}-${index}`
 
-      // Emit starting progress before the agent run so the UI transitions
-      // from "queued" to "running" immediately.
-      task.onUpdate?.({
-        agent: task.agent,
-        status: "running",
-        recentOutput: ["starting worktree dispatch..."],
-        lastActivityAt: Date.now(),
-      })
+      // Emit starting progress so the UI transitions from "queued" to "running" immediately.
+      task.onUpdate?.({ agent: task.agent, status: "running" })
 
       try {
         const options: RunSyncOptions = {
@@ -447,15 +434,21 @@ async function runParallelWithWorktrees(
 
         const resolvedAgent = findAgent(agents, task.agent)!
         const result = await runSync(agentCwd, agents, resolvedAgent.name, task.task, options)
+        const agentOk = result.exitCode === 0 && !result.error
+        const verificationCommand = agentOk ? extractScopedVerificationCommand(task.task) : undefined
+        const verification = verificationCommand
+          ? runScopedVerification(verificationCommand, agentCwd)
+          : undefined
+        const verificationOk = verification ? verification.status === "pass" : true
 
         return {
           agent: task.agent,
-          ok: result.exitCode === 0 && !result.error,
-          error: result.error,
+          ok: agentOk && verificationOk,
+          error: result.error ?? (verificationOk ? undefined : `Scoped verification failed: ${verification?.command ?? "unknown command"}`),
           rawOutput: result.finalOutput ?? "",
           savedOutputPath: result.savedOutputPath,
           outputPath: result.savedOutputPath,
-          verification: undefined,
+          verification,
           worktreePath: undefined as string | undefined,
           patchPath: undefined as string | undefined,
           changedFiles: undefined as string[] | undefined,
@@ -475,8 +468,13 @@ async function runParallelWithWorktrees(
 
     const concurrencyLimit = Math.max(1, concurrency)
 
-    // Run with rolling concurrency control
-    const taskResults: ZflowParallelTaskResult[] = await runTasksWithRollingConcurrency(runQueue, concurrencyLimit)
+    // Run with concurrency control
+    const taskResults: ZflowParallelTaskResult[] = []
+    for (let i = 0; i < runQueue.length; i += concurrencyLimit) {
+      const batch = runQueue.slice(i, i + concurrencyLimit)
+      const batchResults = await Promise.all(batch.map((fn) => fn()))
+      taskResults.push(...batchResults)
+    }
 
     // Capture worktree diffs
     const diffsDir = path.join(cwd, ".zflow", "worktree-diffs", runId)
@@ -538,16 +536,12 @@ async function runParallelConcurrent(
     input.tasks.length,
   )
   const concurrencyLimit = Math.max(1, concurrency)
+  const taskResults: ZflowParallelTaskResult[] = []
 
   const runQueue = input.tasks.map((task, _index) => async () => {
     const taskCwd = task.cwd ?? cwd
     // Emit starting progress so the UI shows "running" immediately.
-    task.onUpdate?.({
-      agent: task.agent,
-      status: "running",
-      recentOutput: ["starting dispatch..."],
-      lastActivityAt: Date.now(),
-    })
+    task.onUpdate?.({ agent: task.agent, status: "running" })
     try {
       const options: RunSyncOptions = {
         runId: generateRunId(),
@@ -582,7 +576,11 @@ async function runParallelConcurrent(
     }
   })
 
-  const taskResults = await runTasksWithRollingConcurrency(runQueue, concurrencyLimit)
+  for (let i = 0; i < runQueue.length; i += concurrencyLimit) {
+    const batch = runQueue.slice(i, i + concurrencyLimit)
+    const batchResults = await Promise.all(batch.map((fn) => fn()))
+    taskResults.push(...batchResults)
+  }
 
   const allOk = taskResults.every((r) => r.ok)
   return { ok: allOk, results: taskResults }
