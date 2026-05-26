@@ -100,6 +100,9 @@ export function expectsImplementationMutation(agent: string, task: string): bool
 	if (ZFLOW_REVIEW_AGENT_PATTERNS.some((pattern) => pattern.test(agent))) {
 		return REVIEWER_REQUIRED_EDIT_PATTERNS.some((pattern) => pattern.test(taskText));
 	}
+	// Planner agents produce plan artifacts via zflow_write_plan_artifact,
+	// not file edits.  They should never trigger the completion guard.
+	if (/^zflow\.planner-/i.test(agent)) return false;
 
 	const workerIntent = agent === "worker" && WORKER_IMPLEMENTATION_PATTERNS.some((pattern) => pattern.test(taskText));
 	if (workerIntent) return true;
@@ -113,6 +116,7 @@ export function hasMutationToolCall(messages: Message[]): boolean {
 		for (const part of message.content) {
 			if (part.type !== "toolCall") continue;
 			if (part.name === "edit" || part.name === "write") return true;
+			if (part.name === "zflow_write_plan_artifact") return true;
 			if (part.name !== "bash") continue;
 			const args = typeof part.arguments === "object" && part.arguments !== null && !Array.isArray(part.arguments)
 				? part.arguments as Record<string, unknown>
